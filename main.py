@@ -9,6 +9,7 @@ import numpy as np
 import asyncio
 from glob import glob
 import encrypt  # Import our encryption module
+import tempfile
 
 app = FastAPI()
 
@@ -32,6 +33,8 @@ async def websocket_endpoint(websocket: WebSocket):
     
     frame_count = 0
     streaming = False
+    use_decryption = False
+    decryption_key = None
     
     while True:
         try:
@@ -52,19 +55,61 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # If the timer completed, send the latest frame
                 if timer_task in done:
-                    frames = sorted(glob("./record_mosaic/frame_*.jpg"))
-                    if frames:
-                        most_recent_frame = frames[-1]
-                        img = cv2.imread(most_recent_frame)
-                        if img is not None:
-                            _, buffer = cv2.imencode(".jpg", img)
-                            img_base64 = base64.b64encode(buffer).decode('utf-8')
+                    if use_decryption and decryption_key:
+                        # Use original encrypted images when decryption key is provided
+                        encrypted_frames = sorted(glob("./record_encrypt/frame_*.jpg.enc"))
+                        if encrypted_frames:
+                            most_recent_frame = encrypted_frames[-1]
+                            original_filename = os.path.basename(most_recent_frame)[:-4]  # Remove .enc
                             
-                            await websocket.send_json({
-                                "type": "stream_frame",
-                                "data": img_base64,
-                                "filename": os.path.basename(most_recent_frame)
-                            })
+                            try:
+                                # Create a temporary file for decrypted content
+                                with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
+                                    temp_path = temp_file.name
+                                
+                                # Decrypt the file
+                                encrypt.decrypt_file(most_recent_frame, decryption_key, temp_path)
+                                
+                                # Read the decrypted image
+                                img = cv2.imread(temp_path)
+                                
+                                # Remove temporary file
+                                os.unlink(temp_path)
+                                
+                                if img is not None:
+                                    _, buffer = cv2.imencode(".jpg", img)
+                                    img_base64 = base64.b64encode(buffer).decode('utf-8')
+                                    
+                                    await websocket.send_json({
+                                        "type": "stream_frame",
+                                        "data": img_base64,
+                                        "filename": original_filename,
+                                        "decrypted": True
+                                    })
+                            except Exception as e:
+                                print(f"Decryption error: {e}")
+                                # Fall back to mosaic if decryption fails
+                                use_decryption = False
+                                await websocket.send_json({
+                                    "type": "decryption_error",
+                                    "message": "Failed to decrypt images. Falling back to mosaic."
+                                })
+                    else:
+                        # Use mosaic images when no decryption key or decryption is off
+                        frames = sorted(glob("./record_mosaic/frame_*.jpg"))
+                        if frames:
+                            most_recent_frame = frames[-1]
+                            img = cv2.imread(most_recent_frame)
+                            if img is not None:
+                                _, buffer = cv2.imencode(".jpg", img)
+                                img_base64 = base64.b64encode(buffer).decode('utf-8')
+                                
+                                await websocket.send_json({
+                                    "type": "stream_frame",
+                                    "data": img_base64,
+                                    "filename": os.path.basename(most_recent_frame),
+                                    "decrypted": False
+                                })
                     continue
             else:
                 # If not streaming, just wait for messages
@@ -114,20 +159,59 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Start streaming mode
                 streaming = True
                 
-                # Send initial frame from mosaic directory
-                frames = sorted(glob("./record_mosaic/frame_*.jpg"))
-                if frames:
-                    most_recent_frame = frames[-1]
-                    img = cv2.imread(most_recent_frame)
-                    if img is not None:
-                        _, buffer = cv2.imencode(".jpg", img)
-                        img_base64 = base64.b64encode(buffer).decode('utf-8')
+                # Get initial frame based on decryption status
+                if use_decryption and decryption_key:
+                    encrypted_frames = sorted(glob("./record_encrypt/frame_*.jpg.enc"))
+                    if encrypted_frames:
+                        most_recent_frame = encrypted_frames[-1]
+                        original_filename = os.path.basename(most_recent_frame)[:-4]  # Remove .enc
                         
-                        await websocket.send_json({
-                            "type": "stream_frame",
-                            "data": img_base64,
-                            "filename": os.path.basename(most_recent_frame)
-                        })
+                        try:
+                            # Create a temporary file for decrypted content
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
+                                temp_path = temp_file.name
+                            
+                            # Decrypt the file
+                            encrypt.decrypt_file(most_recent_frame, decryption_key, temp_path)
+                            
+                            # Read the decrypted image
+                            img = cv2.imread(temp_path)
+                            
+                            # Remove temporary file
+                            os.unlink(temp_path)
+                            
+                            if img is not None:
+                                _, buffer = cv2.imencode(".jpg", img)
+                                img_base64 = base64.b64encode(buffer).decode('utf-8')
+                                
+                                await websocket.send_json({
+                                    "type": "stream_frame",
+                                    "data": img_base64,
+                                    "filename": original_filename,
+                                    "decrypted": True
+                                })
+                        except Exception as e:
+                            print(f"Decryption error: {e}")
+                            use_decryption = False
+                            await websocket.send_json({
+                                "type": "decryption_error",
+                                "message": "Failed to decrypt images. Falling back to mosaic."
+                            })
+                else:
+                    frames = sorted(glob("./record_mosaic/frame_*.jpg"))
+                    if frames:
+                        most_recent_frame = frames[-1]
+                        img = cv2.imread(most_recent_frame)
+                        if img is not None:
+                            _, buffer = cv2.imencode(".jpg", img)
+                            img_base64 = base64.b64encode(buffer).decode('utf-8')
+                            
+                            await websocket.send_json({
+                                "type": "stream_frame",
+                                "data": img_base64,
+                                "filename": os.path.basename(most_recent_frame),
+                                "decrypted": False
+                            })
             
             elif data["type"] == "stop_stream":
                 # Stop streaming mode
@@ -135,6 +219,48 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "stream_complete"
                 })
+                
+            elif data["type"] == "set_decryption_key":
+                # Client is sending a decryption key
+                provided_key = data.get("key")
+                if provided_key:
+                    try:
+                        # Generate key from provided password
+                        key = encrypt.generate_key(provided_key)
+                        
+                        # Test decryption on a random encrypted file to validate key
+                        encrypted_files = glob("./record_encrypt/*.enc")
+                        if encrypted_files:
+                            test_file = encrypted_files[0]
+                            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                                temp_path = temp_file.name
+                            
+                            # Try to decrypt a file to verify the key
+                            encrypt.decrypt_file(test_file, key, temp_path)
+                            os.unlink(temp_path)  # Remove temp file
+                            
+                            # If no exception was raised, key is valid
+                            decryption_key = key
+                            use_decryption = True
+                            
+                            await websocket.send_json({
+                                "type": "decryption_key_valid",
+                                "message": "Decryption key accepted. Streaming original images."
+                            })
+                    except Exception as e:
+                        print(f"Invalid decryption key: {e}")
+                        await websocket.send_json({
+                            "type": "decryption_key_invalid",
+                            "message": "Invalid decryption key provided."
+                        })
+                else:
+                    # Turn off decryption if empty key is provided
+                    use_decryption = False
+                    decryption_key = None
+                    await websocket.send_json({
+                        "type": "decryption_disabled",
+                        "message": "Decryption disabled. Streaming mosaic images."
+                    })
 
         except Exception as e:
             print(f"Error: {e}")
