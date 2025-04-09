@@ -85,10 +85,10 @@ async def process_rtsp_stream():
                     encrypt_path = f"./record_encrypt/{filename}.enc"
                     encrypt.encrypt_file(file_path, key, encrypt_path)
                     
-                    # # Delete original image after mosaicking and encryption
-                    # if os.path.exists(mosaic_path) and os.path.exists(encrypt_path):
-                    #     os.remove(file_path)
-                    #     print(f"[Deleted original] {filename}")
+                    # Delete original image after mosaicking and encryption
+                    if os.path.exists(mosaic_path) and os.path.exists(encrypt_path):
+                        os.remove(file_path)
+                        print(f"[Deleted original] {filename}")
 
                     print(f"[Processed] {filename}")
                     frame_count += 1
