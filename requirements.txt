@@ -5,3 +5,5 @@ fastapi
 uvicorn
 uvicorn[standard]
 cryptography
+ffmpeg-python
+numpy

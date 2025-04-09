@@ -2,3 +2,6 @@ env/
 record/
 record_mosaic/
 record_encrypt/
+frames/
+__pycache__/
+*.pyc

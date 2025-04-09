@@ -10,6 +10,7 @@ import asyncio
 from glob import glob
 import encrypt  # Import our encryption module
 import tempfile
+import ffmpeg
 
 app = FastAPI()
 
@@ -27,11 +28,76 @@ os.makedirs("./record", exist_ok=True)
 os.makedirs("./record_mosaic", exist_ok=True)
 os.makedirs("./record_encrypt", exist_ok=True)
 
+# RTSP stream settings
+width, height = 1920, 1080
+rtsp_url = 'rtsp://192.168.128.11:9000/live'
+frame_interval = 0.5  # Capture a frame every 0.5 seconds
+
+# Frame processing task
+async def process_rtsp_stream():
+    frame_count = 0
+    
+    # Start ffmpeg process
+    process = (
+        ffmpeg
+        .input(rtsp_url, rtsp_transport='tcp')
+        .output('pipe:', format='rawvideo', pix_fmt='bgr24', loglevel='quiet')
+        .run_async(pipe_stdout=True)
+    )
+    
+    print("[INFO] RTSP streaming started. Processing frames...")
+    
+    try:
+        while True:
+            # Read frame
+            in_bytes = process.stdout.read(width * height * 3)
+            if not in_bytes:
+                break
+            
+            # Convert to numpy array
+            frame = np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3])
+            
+            # Resize maintaining aspect ratio
+            new_width = 600
+            new_height = int((height / width) * new_width)
+            resized_frame = cv2.resize(frame, (new_width, new_height))
+            
+            # Save resized frame
+            timestamp = int(time.time() * 1000)
+            filename = f"frame_{timestamp}_{frame_count}.jpg"
+            file_path = f"./record/{filename}"
+            cv2.imwrite(file_path, resized_frame)
+            
+            # Process the image (mosaic faces and encrypt original)
+            try:
+                # Apply face mosaic
+                mosaic_img = encrypt.apply_face_mosaic(resized_frame)
+                mosaic_path = f"./record_mosaic/{filename}"
+                cv2.imwrite(mosaic_path, mosaic_img)
+                
+                # Encrypt original image
+                key = encrypt.generate_key(encrypt.ENCRYPTION_KEY)
+                encrypt_path = f"./record_encrypt/{filename}.enc"
+                encrypt.encrypt_file(file_path, key, encrypt_path)
+                
+                print(f"[Processed] {filename}")
+                frame_count += 1
+            except Exception as e:
+                print(f"Error processing image: {e}")
+            
+            # Wait before capturing next frame
+            await asyncio.sleep(frame_interval)
+    except Exception as e:
+        print(f"RTSP stream error: {e}")
+    finally:
+        # Clean up
+        process.terminate()
+        print("[INFO] RTSP stream processing stopped")
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
-    frame_count = 0
     streaming = False
     use_decryption = False
     decryption_key = None
@@ -119,43 +185,8 @@ async def websocket_endpoint(websocket: WebSocket):
             message = receive_task.result()
             data = json.loads(message)
             print(f"Received message type: {data['type']}")
-
-            if data["type"] == "video_frame":
-                # Decode base64 image
-                img_data = base64.b64decode(data["data"])
-                
-                # Convert to numpy array for OpenCV
-                nparr = np.frombuffer(img_data, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                
-                # Save image to ./record directory without session_id
-                timestamp = int(time.time() * 1000)
-                filename = f"frame_{timestamp}_{frame_count}.jpg"
-                file_path = f"./record/{filename}"
-                cv2.imwrite(file_path, img)
-                frame_count += 1
-                
-                # Process the image (mosaic faces and encrypt original)
-                try:
-                    # Apply face mosaic
-                    mosaic_img = encrypt.apply_face_mosaic(img)
-                    mosaic_path = f"./record_mosaic/{filename}"
-                    cv2.imwrite(mosaic_path, mosaic_img)
-                    
-                    # Encrypt original image
-                    key = encrypt.generate_key(encrypt.ENCRYPTION_KEY)
-                    encrypt_path = f"./record_encrypt/{filename}.enc"
-                    encrypt.encrypt_file(file_path, key, encrypt_path)
-                except Exception as e:
-                    print(f"Error processing image: {e}")
-                
-                # Send confirmation back to client
-                await websocket.send_json({
-                    "type": "frame_received",
-                    "frame_number": frame_count
-                })
             
-            elif data["type"] == "stream_request":
+            if data["type"] == "stream_request":
                 # Start streaming mode
                 streaming = True
                 
@@ -266,10 +297,25 @@ async def websocket_endpoint(websocket: WebSocket):
             print(f"Error: {e}")
             break
 
-# Process existing images when the server starts
+def del_files():
+    # Delete all files in ./record directory
+    for file in os.listdir("./record"):
+        os.remove(os.path.join("./record", file))
+    for file in os.listdir("./record_mosaic"):
+        os.remove(os.path.join("./record_mosaic", file))
+    for file in os.listdir("./record_encrypt"):
+        os.remove(os.path.join("./record_encrypt", file))
+
+# Start RTSP processing and process existing images when the server starts
 @app.on_event("startup")
 async def startup_event():
+    del_files()
+
+    # Process any existing images
     encrypt.process_files()
+    
+    # Start RTSP processing task
+    asyncio.create_task(process_rtsp_stream())
 
 if __name__ == "__main__":
     import uvicorn
