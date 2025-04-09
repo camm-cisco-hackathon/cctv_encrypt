@@ -5,8 +5,8 @@ import base64
 import cv2
 import os
 import time
-import uuid
 import numpy as np
+import asyncio
 from glob import glob
 
 app = FastAPI()
@@ -28,11 +28,47 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
     frame_count = 0
-    session_id = uuid.uuid4()
+    streaming = False
     
     while True:
         try:
-            message = await websocket.receive_text()
+            # Set up a task to receive messages without blocking stream updates
+            receive_task = asyncio.create_task(websocket.receive_text())
+            
+            # If streaming mode is on, also create a timer task
+            if streaming:
+                timer_task = asyncio.create_task(asyncio.sleep(1))
+                done, pending = await asyncio.wait(
+                    [receive_task, timer_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # Cancel any pending tasks
+                for task in pending:
+                    task.cancel()
+                
+                # If the timer completed, send the latest frame
+                if timer_task in done:
+                    frames = sorted(glob("./record/frame_*.jpg"))
+                    if frames:
+                        most_recent_frame = frames[-1]
+                        img = cv2.imread(most_recent_frame)
+                        if img is not None:
+                            _, buffer = cv2.imencode(".jpg", img)
+                            img_base64 = base64.b64encode(buffer).decode('utf-8')
+                            
+                            await websocket.send_json({
+                                "type": "stream_frame",
+                                "data": img_base64,
+                                "filename": os.path.basename(most_recent_frame)
+                            })
+                    continue
+            else:
+                # If not streaming, just wait for messages
+                await receive_task
+            
+            # Process the received message
+            message = receive_task.result()
             data = json.loads(message)
             print(f"Received message type: {data['type']}")
 
@@ -44,9 +80,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 nparr = np.frombuffer(img_data, np.uint8)
                 img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 
-                # Save image to ./record directory
+                # Save image to ./record directory without session_id
                 timestamp = int(time.time() * 1000)
-                filename = f"./record/frame_{session_id}_{timestamp}_{frame_count}.jpg"
+                filename = f"./record/frame_{timestamp}_{frame_count}.jpg"
                 cv2.imwrite(filename, img)
                 frame_count += 1
                 
@@ -57,34 +93,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             
             elif data["type"] == "stream_request":
-                # Get session ID to stream (optional, stream all if not provided)
-                target_session = data.get("session_id", None)
+                # Start streaming mode
+                streaming = True
                 
-                if target_session:
-                    frames = sorted(glob(f"./record/frame_{target_session}_*.jpg"))
-                else:
-                    frames = sorted(glob("./record/frame_*.jpg"))
-                
-                for frame_path in frames:
-                    # Read the image
-                    img = cv2.imread(frame_path)
-                    if img is None:
-                        continue
-                    
-                    # Encode to base64
-                    _, buffer = cv2.imencode(".jpg", img)
-                    img_base64 = base64.b64encode(buffer).decode('utf-8')
-                    
-                    # Send frame to client
-                    await websocket.send_json({
-                        "type": "stream_frame",
-                        "data": img_base64,
-                        "filename": os.path.basename(frame_path)
-                    })
-                    
-                    # Brief pause between frames
-                    time.sleep(0.1)  # Adjust streaming speed as needed
-                
+                # Send initial frame
+                frames = sorted(glob("./record/frame_*.jpg"))
+                if frames:
+                    most_recent_frame = frames[-1]
+                    img = cv2.imread(most_recent_frame)
+                    if img is not None:
+                        _, buffer = cv2.imencode(".jpg", img)
+                        img_base64 = base64.b64encode(buffer).decode('utf-8')
+                        
+                        await websocket.send_json({
+                            "type": "stream_frame",
+                            "data": img_base64,
+                            "filename": os.path.basename(most_recent_frame)
+                        })
+            
+            elif data["type"] == "stop_stream":
+                # Stop streaming mode
+                streaming = False
                 await websocket.send_json({
                     "type": "stream_complete"
                 })
