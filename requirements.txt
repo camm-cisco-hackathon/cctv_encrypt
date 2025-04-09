@@ -1,11 +1,9 @@
-aiohttp
-aiortc
-opencv-python
+numpy
 fastapi
 uvicorn
-uvicorn[standard]
+opencv-python-headless
 cryptography
-ffmpeg-python
-numpy
-retina-face
 ultralytics
+python-multipart
+uvicorn[standard]
+ffmpeg-python
