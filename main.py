@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import json
@@ -28,16 +29,21 @@ os.makedirs("./record", exist_ok=True)
 os.makedirs("./record_mosaic", exist_ok=True)
 os.makedirs("./record_encrypt", exist_ok=True)
 
+INTERVAL = 0.5
+
 # RTSP stream settings
 width, height = 1920, 1080
 rtsp_url = 'rtsp://192.168.128.11:9000/live'
-frame_interval = 0.5  # Capture a frame every 0.5 seconds
+frame_interval = INTERVAL  # Capture a frame every 0.5 seconds
 
 # Frame processing task
 async def process_rtsp_stream():
-    frame_count = 0
+    # Create directories if they don't exist
+    os.makedirs("./record", exist_ok=True)
+    os.makedirs("./record_mosaic", exist_ok=True)
+    os.makedirs("./record_encrypt", exist_ok=True)
     
-    # Start ffmpeg process
+    # ffmpeg process to receive RTSP stream
     process = (
         ffmpeg
         .input(rtsp_url, rtsp_transport='tcp')
@@ -45,48 +51,52 @@ async def process_rtsp_stream():
         .run_async(pipe_stdout=True)
     )
     
-    print("[INFO] RTSP streaming started. Processing frames...")
+    frame_count = 0
+    last_saved_time = time.time()
     
     try:
         while True:
-            # Read frame
+            # Read frame from RTSP stream
             in_bytes = process.stdout.read(width * height * 3)
             if not in_bytes:
+                print("[ERROR] No bytes received from RTSP stream")
                 break
-            
-            # Convert to numpy array
+                
+            # Convert bytes to numpy array (frame)
             frame = np.frombuffer(in_bytes, np.uint8).reshape([height, width, 3])
+            now = time.time()
             
-            # Resize maintaining aspect ratio
-            new_width = 600
-            new_height = int((height / width) * new_width)
-            resized_frame = cv2.resize(frame, (new_width, new_height))
-            
-            # Save resized frame
-            timestamp = int(time.time() * 1000)
-            filename = f"frame_{timestamp}_{frame_count}.jpg"
-            file_path = f"./record/{filename}"
-            cv2.imwrite(file_path, resized_frame)
-            
-            # Process the image (mosaic faces and encrypt original)
-            try:
-                # Apply face mosaic
-                mosaic_img = encrypt.apply_face_mosaic(resized_frame)
-                mosaic_path = f"./record_mosaic/{filename}"
-                cv2.imwrite(mosaic_path, mosaic_img)
+            # Save frame at specified interval
+            if now - last_saved_time >= frame_interval:
+                # Save original image
+                filename = f"frame_{frame_count:04d}.jpg"
+                file_path = f"./record/{filename}"
+                cv2.imwrite(file_path, frame)
+                last_saved_time = now
                 
-                # Encrypt original image
-                key = encrypt.generate_key(encrypt.ENCRYPTION_KEY)
-                encrypt_path = f"./record_encrypt/{filename}.enc"
-                encrypt.encrypt_file(file_path, key, encrypt_path)
-                
-                print(f"[Processed] {filename}")
-                frame_count += 1
-            except Exception as e:
-                print(f"Error processing image: {e}")
+                try:
+                    # Apply face mosaic
+                    mosaic_img = encrypt.apply_face_mosaic(frame)
+                    mosaic_path = f"./record_mosaic/{filename}"
+                    cv2.imwrite(mosaic_path, mosaic_img)
+                    
+                    # Encrypt original image
+                    key = encrypt.generate_key(encrypt.ENCRYPTION_KEY)
+                    encrypt_path = f"./record_encrypt/{filename}.enc"
+                    encrypt.encrypt_file(file_path, key, encrypt_path)
+                    
+                    # # Delete original image after mosaicking and encryption
+                    # if os.path.exists(mosaic_path) and os.path.exists(encrypt_path):
+                    #     os.remove(file_path)
+                    #     print(f"[Deleted original] {filename}")
+
+                    print(f"[Processed] {filename}")
+                    frame_count += 1
+                except Exception as e:
+                    print(f"Error processing image: {e}")
             
-            # Wait before capturing next frame
-            await asyncio.sleep(frame_interval)
+            # Wait before processing next frame
+            await asyncio.sleep(0.01)  # Small delay to prevent CPU hogging
     except Exception as e:
         print(f"RTSP stream error: {e}")
     finally:
@@ -109,7 +119,7 @@ async def websocket_endpoint(websocket: WebSocket):
             
             # If streaming mode is on, also create a timer task
             if streaming:
-                timer_task = asyncio.create_task(asyncio.sleep(1))
+                timer_task = asyncio.create_task(asyncio.sleep(INTERVAL))
                 done, pending = await asyncio.wait(
                     [receive_task, timer_task],
                     return_when=asyncio.FIRST_COMPLETED
