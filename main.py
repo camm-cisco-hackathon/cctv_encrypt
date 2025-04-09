@@ -8,6 +8,7 @@ import time
 import numpy as np
 import asyncio
 from glob import glob
+import encrypt  # Import our encryption module
 
 app = FastAPI()
 
@@ -20,8 +21,10 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Create record directory if it doesn't exist
+# Create all necessary directories if they don't exist
 os.makedirs("./record", exist_ok=True)
+os.makedirs("./record_mosaic", exist_ok=True)
+os.makedirs("./record_encrypt", exist_ok=True)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -49,7 +52,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # If the timer completed, send the latest frame
                 if timer_task in done:
-                    frames = sorted(glob("./record/frame_*.jpg"))
+                    frames = sorted(glob("./record_mosaic/frame_*.jpg"))
                     if frames:
                         most_recent_frame = frames[-1]
                         img = cv2.imread(most_recent_frame)
@@ -82,9 +85,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # Save image to ./record directory without session_id
                 timestamp = int(time.time() * 1000)
-                filename = f"./record/frame_{timestamp}_{frame_count}.jpg"
-                cv2.imwrite(filename, img)
+                filename = f"frame_{timestamp}_{frame_count}.jpg"
+                file_path = f"./record/{filename}"
+                cv2.imwrite(file_path, img)
                 frame_count += 1
+                
+                # Process the image (mosaic faces and encrypt original)
+                try:
+                    # Apply face mosaic
+                    mosaic_img = encrypt.apply_face_mosaic(img)
+                    mosaic_path = f"./record_mosaic/{filename}"
+                    cv2.imwrite(mosaic_path, mosaic_img)
+                    
+                    # Encrypt original image
+                    key = encrypt.generate_key(encrypt.ENCRYPTION_KEY)
+                    encrypt_path = f"./record_encrypt/{filename}.enc"
+                    encrypt.encrypt_file(file_path, key, encrypt_path)
+                except Exception as e:
+                    print(f"Error processing image: {e}")
                 
                 # Send confirmation back to client
                 await websocket.send_json({
@@ -96,8 +114,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Start streaming mode
                 streaming = True
                 
-                # Send initial frame
-                frames = sorted(glob("./record/frame_*.jpg"))
+                # Send initial frame from mosaic directory
+                frames = sorted(glob("./record_mosaic/frame_*.jpg"))
                 if frames:
                     most_recent_frame = frames[-1]
                     img = cv2.imread(most_recent_frame)
@@ -121,6 +139,11 @@ async def websocket_endpoint(websocket: WebSocket):
         except Exception as e:
             print(f"Error: {e}")
             break
+
+# Process existing images when the server starts
+@app.on_event("startup")
+async def startup_event():
+    encrypt.process_files()
 
 if __name__ == "__main__":
     import uvicorn
