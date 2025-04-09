@@ -7,3 +7,5 @@ uvicorn[standard]
 cryptography
 ffmpeg-python
 numpy
+retina-face
+ultralytics

@@ -52,25 +52,60 @@ def decrypt_file(file_path, key, output_path):
         file.write(decrypted_data)
 
 def apply_face_mosaic(image, scale=0.1):
-    """Detect faces and apply mosaic effect"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-    
-    # Create a copy for modification
-    result_image = image.copy()
-    
-    for (x, y, w, h) in faces:
-        # Extract the face region
-        face_roi = result_image[y:y+h, x:x+w]
+    """Detect faces and apply mosaic effect using YOLO"""
+    try:
+        import ultralytics
+        from ultralytics import YOLO
         
-        # Apply mosaic effect (downscale and upscale)
-        small = cv2.resize(face_roi, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
-        face_roi_mosaic = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+        model = YOLO("yolov11n-face.pt")
         
-        # Replace the face region with the mosaic version
-        result_image[y:y+h, x:x+w] = face_roi_mosaic
+        # Create a copy for modification
+        result_image = image.copy()
         
-    return result_image
+        # Run inference on the image
+        results = model(image)
+        
+        # Process detected faces
+        if results and len(results) > 0:
+            for result in results[0].boxes.data:
+                x1, y1, x2, y2, conf, class_id = result
+                
+                # Convert to integers
+                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                
+                # Extract the face region
+                face_roi = result_image[y1:y2, x1:x2]
+                
+                # Apply mosaic effect (downscale and upscale)
+                small = cv2.resize(face_roi, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+                face_roi_mosaic = cv2.resize(small, (x2-x1, y2-y1), interpolation=cv2.INTER_NEAREST)
+                
+                # Replace the face region with the mosaic version
+                result_image[y1:y2, x1:x2] = face_roi_mosaic
+                
+        return result_image
+        
+    except Exception as e:
+        print(f"Error in YOLO face detection: {e}")
+        # Fallback to Haar cascade if YOLO fails
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        
+        # Create a copy for modification
+        result_image = image.copy()
+        
+        for (x, y, w, h) in faces:
+            # Extract the face region
+            face_roi = result_image[y:y+h, x:x+w]
+            
+            # Apply mosaic effect (downscale and upscale)
+            small = cv2.resize(face_roi, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+            face_roi_mosaic = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+            
+            # Replace the face region with the mosaic version
+            result_image[y:y+h, x:x+w] = face_roi_mosaic
+            
+        return result_image
 
 def process_files():
     """Process all images in the input directory"""
@@ -108,9 +143,9 @@ def process_files():
         # Delete original image after mosaicking and encryption
         if os.path.exists(mosaic_path) and os.path.exists(encrypt_path):
             os.remove(file_path)
-            print(f"Deleted original: {filename}")
+            # print(f"Deleted original: {filename}")
         
-        print(f"Processed: {filename}")
+        # print(f"Processed: {filename}")
 
 def main():
     """Main function"""
